@@ -9,11 +9,10 @@ struct CustomVideoPlayerView: View {
     @State private var showControls = true
     @State private var isPlaying = true
     @State private var autoHideWorkItem: DispatchWorkItem?
-
-    // Timestamp tracking
     @State private var currentTime: Double = 0
     @State private var duration: Double = 1
     @State private var isScrubbing = false
+    @State private var annotations: [VideoAnnotation] = []
 
     init(videoURL: URL, isPresentingPlayer: Binding<Bool>) {
         self.videoURL = videoURL
@@ -32,7 +31,6 @@ struct CustomVideoPlayerView: View {
 
             if showControls {
                 VStack {
-                    // X button
                     HStack {
                         Button(action: {
                             player.pause()
@@ -49,7 +47,13 @@ struct CustomVideoPlayerView: View {
 
                     Spacer()
 
-                    // Playback buttons
+                    HStack(spacing: 12) {
+                        annotationButton(label: "Point Home")
+                        annotationButton(label: "Point Away")
+                        annotationButton(label: "Kill")
+                        annotationButton(label: "Funny")
+                    }
+
                     HStack(spacing: 40) {
                         Button(action: { seek(by: -5) }) {
                             Image(systemName: "gobackward.5")
@@ -70,7 +74,6 @@ struct CustomVideoPlayerView: View {
                         }
                     }
 
-                    // Slider + time labels
                     VStack(spacing: 4) {
                         Slider(
                             value: Binding(get: {
@@ -110,8 +113,30 @@ struct CustomVideoPlayerView: View {
         }
         .onAppear {
             print("🎬 Attempting to play video: \(videoURL.absoluteString)")
+            annotations = MetadataManager.shared.loadAnnotations(for: videoURL)
             configureAudioSession()
             loadAsset()
+        }
+        .onDisappear {
+            MetadataManager.shared.saveAnnotations(annotations, for: videoURL)
+        }
+    }
+
+    func annotationButton(label: String) -> some View {
+        Button(action: {
+            let timestamp = formatTime(currentTime)
+            let annotation = VideoAnnotation(timestamp: timestamp, label: label)
+            annotations.append(annotation)
+            MetadataManager.shared.saveAnnotations(annotations, for: videoURL)
+            print("📍 Annotation saved: \(timestamp) - \(label)")
+            scheduleAutoHide()
+        }) {
+            Text(label)
+                .font(.caption)
+                .padding(8)
+                .background(Color.white.opacity(0.8))
+                .foregroundColor(.black)
+                .cornerRadius(8)
         }
     }
 
