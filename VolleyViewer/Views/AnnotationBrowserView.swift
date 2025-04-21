@@ -123,7 +123,7 @@ struct AnnotationBrowserView: View {
                         Text(annotation.label)
                     }
                 }
-                .navigationTitle(selectedFile?.lastPathComponent ?? "Annotations")
+                .navigationTitle(MetadataManager.shared.loadDisplayName(from: selectedFile ?? URL(fileURLWithPath: "")))
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Done") {
