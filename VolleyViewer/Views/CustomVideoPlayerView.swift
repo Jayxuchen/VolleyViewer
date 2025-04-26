@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 
+
 struct CustomVideoPlayerView: View {
     let videoURL: URL
     @Binding var isPresentingPlayer: Bool
@@ -13,6 +14,15 @@ struct CustomVideoPlayerView: View {
     @State private var duration: Double = 1
     @State private var isScrubbing = false
     @State private var annotations: [VideoAnnotation] = []
+    @State private var lastTapDate: Date = Date.distantPast
+    @State private var showFlashOverlay = false
+    @State private var flashText = ""
+    @State private var singleTapWorkItem: DispatchWorkItem?
+    @State private var homeScore: Int = 0
+    @State private var awayScore: Int = 0
+
+
+
 
     init(videoURL: URL, isPresentingPlayer: Binding<Bool>) {
         self.videoURL = videoURL
@@ -24,10 +34,117 @@ struct CustomVideoPlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            VideoPlayerContainer(player: player)
-                .onTapGesture {
-                    toggleControls()
+            GeometryReader { geometry in
+                VideoPlayerContainer(player: player)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onEnded { value in
+                                let now = Date()
+                                let timeSinceLastTap = now.timeIntervalSince(lastTapDate)
+
+                                let tapX = value.location.x
+                                let width = geometry.size.width
+
+                                if timeSinceLastTap < 0.3 {
+                                    // Double tap detected
+                                    singleTapWorkItem?.cancel()
+                                    singleTapWorkItem = nil
+
+                                    if tapX < width / 2 {
+                                        seek(by: -5)
+                                        flashText = "«5"
+                                        print("👈 Double tap left: -5 seconds")
+                                    } else {
+                                        seek(by: 5)
+                                        flashText = "5»"
+                                        print("👉 Double tap right: +5 seconds")
+                                    }
+
+                                    // Flash overlay
+                                    showFlashOverlay = true
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                        withAnimation {
+                                            showFlashOverlay = false
+                                        }
+                                    }
+                                } else {
+                                    // Single tap detected - delayed toggleControls
+                                    let workItem = DispatchWorkItem {
+                                        toggleControls()
+                                    }
+                                    singleTapWorkItem = workItem
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+                                }
+
+                                lastTapDate = now
+                            }
+                    )
+            }
+            
+            if showControls {
+                Button(action: togglePlayPause) {
+                    Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 50))
+                        .foregroundColor(.white)
+                        .shadow(radius: 10)
                 }
+                .transition(.opacity)
+                .animation(.easeInOut, value: showControls)
+            }
+
+            VStack {
+                Spacer()
+
+                // Annotation buttons
+                HStack(spacing: 20) {
+                    // Home Score Box
+                    ScoreBoxView(
+                        teamName: "Home",
+                        score: homeScore,
+                        backgroundColor: .blue,
+                        onTopTap: {
+                            addPoint(for: "Point Home")
+                            homeScore += 1
+                        },
+                        onBottomTap: {
+                            removeLastPoint(for: "Point Home")
+                            homeScore = max(homeScore - 1, 0)
+                        }
+                    )
+
+                    // Away Score Box
+                    ScoreBoxView(
+                        teamName: "Away",
+                        score: awayScore,
+                        backgroundColor: .red,
+                        onTopTap: {
+                            addPoint(for: "Point Away")
+                            awayScore += 1
+                        },
+                        onBottomTap: {
+                            removeLastPoint(for: "Point Away")
+                            awayScore = max(awayScore - 1, 0)
+                        }
+                    )
+                }
+                .padding(.bottom, showControls ? 120 : 30)
+
+                .padding(.bottom, showControls ? 120 : 30) // 👈 Key: dynamic padding based on showControls
+            }
+            .ignoresSafeArea()
+            
+            if showFlashOverlay {
+                Text(flashText)
+                    .font(.system(size: 48, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding()
+                    .background(Color.black.opacity(0.6))
+                    .cornerRadius(12)
+                    .transition(.scale)
+                    .animation(.easeInOut, value: showFlashOverlay)
+            }
+
 
             if showControls {
                 VStack {
@@ -46,33 +163,6 @@ struct CustomVideoPlayerView: View {
                     }
 
                     Spacer()
-
-                    HStack(spacing: 12) {
-                        annotationButton(label: "Point Home")
-                        annotationButton(label: "Point Away")
-                        annotationButton(label: "Kill")
-                        annotationButton(label: "Funny")
-                    }
-
-                    HStack(spacing: 40) {
-                        Button(action: { seek(by: -5) }) {
-                            Image(systemName: "gobackward.5")
-                                .font(.system(size: 36))
-                                .foregroundColor(.white)
-                        }
-
-                        Button(action: togglePlayPause) {
-                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 36))
-                                .foregroundColor(.white)
-                        }
-
-                        Button(action: { seek(by: 5) }) {
-                            Image(systemName: "goforward.5")
-                                .font(.system(size: 36))
-                                .foregroundColor(.white)
-                        }
-                    }
 
                     VStack(spacing: 4) {
                         Slider(
@@ -238,5 +328,59 @@ struct CustomVideoPlayerView: View {
         let minutes = totalSeconds / 60
         let secs = totalSeconds % 60
         return String(format: "%02d:%02d", minutes, secs)
+    }
+    
+    func addPoint(for label: String) {
+        let timestamp = formatTime(currentTime)
+        let annotation = VideoAnnotation(timestamp: timestamp, label: label)
+        annotations.append(annotation)
+        MetadataManager.shared.saveAnnotations(annotations, for: videoURL)
+        print("📍 Added annotation: \(timestamp) - \(label)")
+        scheduleAutoHide()
+    }
+
+    func removeLastPoint(for label: String) {
+        if let lastIndex = annotations.lastIndex(where: { $0.label == label }) {
+            annotations.remove(at: lastIndex)
+            MetadataManager.shared.saveAnnotations(annotations, for: videoURL)
+            print("🗑️ Removed last \(label) annotation")
+            scheduleAutoHide()
+        }
+    }
+
+}
+
+struct ScoreBoxView: View {
+    var teamName: String
+    var score: Int
+    var backgroundColor: Color
+    var onTopTap: () -> Void
+    var onBottomTap: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack {
+                Text(teamName)
+                    .font(.caption)
+                    .foregroundColor(.white)
+                Text("\(score)")
+                    .font(.title2)
+                    .bold()
+                    .foregroundColor(.white)
+            }
+            .frame(width: 80, height: 50)
+            .background(backgroundColor)
+            .onTapGesture {
+                onTopTap()
+            }
+
+            Rectangle()
+                .fill(backgroundColor.opacity(0.8))
+                .frame(width: 80, height: 40)
+                .onTapGesture {
+                    onBottomTap()
+                }
+        }
+        .cornerRadius(8)
     }
 }
