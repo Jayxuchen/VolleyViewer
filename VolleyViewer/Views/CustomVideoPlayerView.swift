@@ -1,3 +1,4 @@
+// CustomVideoPlayerView.swift 
 import SwiftUI
 import AVFoundation
 
@@ -13,13 +14,11 @@ struct CustomVideoPlayerView: View {
     @State private var currentTime: Double = 0
     @State private var duration: Double = 1
     @State private var isScrubbing = false
-    @State private var annotations: [VideoAnnotation] = []
+    @State private var annotatedFile: AnnotatedFile
     @State private var lastTapDate: Date = Date.distantPast
     @State private var showFlashOverlay = false
     @State private var flashText = ""
     @State private var singleTapWorkItem: DispatchWorkItem?
-    @State private var homeScore: Int = 0
-    @State private var awayScore: Int = 0
 
 
 
@@ -28,6 +27,21 @@ struct CustomVideoPlayerView: View {
         self.videoURL = videoURL
         self._isPresentingPlayer = isPresentingPlayer
         _player = State(initialValue: AVPlayer())
+
+        let timestampFormatter = DateFormatter()
+        timestampFormatter.dateFormat = "yyyy-MM-dd hh:mm a"
+        
+        let creationDate = (try? videoURL.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+        let timestamp = timestampFormatter.string(from: creationDate)
+
+        _annotatedFile = State(initialValue: AnnotatedFile(
+            displayName: timestamp,
+            annotations: [],
+            homeScore: 0,
+            awayScore: 0,
+            lastHomePointIndex: nil,
+            lastAwayPointIndex: nil
+        ))
     }
 
     var body: some View {
@@ -101,30 +115,25 @@ struct CustomVideoPlayerView: View {
                     // Home Score Box
                     ScoreBoxView(
                         teamName: "Home",
-                        score: homeScore,
+                        score: annotatedFile.homeScore,
                         backgroundColor: .blue,
                         onTopTap: {
                             addPoint(for: "Point Home")
-                            homeScore += 1
                         },
                         onBottomTap: {
                             removeLastPoint(for: "Point Home")
-                            homeScore = max(homeScore - 1, 0)
                         }
                     )
-
                     // Away Score Box
                     ScoreBoxView(
                         teamName: "Away",
-                        score: awayScore,
+                        score: annotatedFile.awayScore,
                         backgroundColor: .red,
                         onTopTap: {
                             addPoint(for: "Point Away")
-                            awayScore += 1
                         },
                         onBottomTap: {
                             removeLastPoint(for: "Point Away")
-                            awayScore = max(awayScore - 1, 0)
                         }
                     )
                 }
@@ -203,30 +212,16 @@ struct CustomVideoPlayerView: View {
         }
         .onAppear {
             print("🎬 Attempting to play video: \(videoURL.absoluteString)")
-            annotations = MetadataManager.shared.loadAnnotations(for: videoURL)
+        
+            if let loaded = MetadataManager.shared.loadAnnotatedFile(for: videoURL) {
+                annotatedFile = loaded
+            }
             configureAudioSession()
             loadAsset()
         }
         .onDisappear {
-            MetadataManager.shared.saveAnnotations(annotations, for: videoURL)
-        }
-    }
-
-    func annotationButton(label: String) -> some View {
-        Button(action: {
-            let timestamp = formatTime(currentTime)
-            let annotation = VideoAnnotation(timestamp: timestamp, label: label)
-            annotations.append(annotation)
-            MetadataManager.shared.saveAnnotations(annotations, for: videoURL)
-            print("📍 Annotation saved: \(timestamp) - \(label)")
-            scheduleAutoHide()
-        }) {
-            Text(label)
-                .font(.caption)
-                .padding(8)
-                .background(Color.white.opacity(0.8))
-                .foregroundColor(.black)
-                .cornerRadius(8)
+            annotatedFile.lastPlayedTime = currentTime
+            MetadataManager.shared.saveAnnotatedFile(annotatedFile, for: videoURL)
         }
     }
 
@@ -241,7 +236,7 @@ struct CustomVideoPlayerView: View {
     }
 
     func loadAsset() {
-        print("🔄 Loading asset for URL: \(videoURL.absoluteString)")
+        print("Loading asset for URL: \(videoURL.absoluteString)")
         let asset = AVURLAsset(url: videoURL)
         let keys = ["playable"]
 
@@ -251,19 +246,23 @@ struct CustomVideoPlayerView: View {
 
             switch status {
             case .loaded:
-                print("✅ Video is playable")
                 let item = AVPlayerItem(asset: asset)
                 player.replaceCurrentItem(with: item)
+                if let lastTime = annotatedFile.lastPlayedTime, lastTime > 0 {
+                    let cmTime = CMTime(seconds: lastTime, preferredTimescale: 600)
+                    player.seek(to: cmTime)
+                    print("Resumed playback at \(formatTime(lastTime))")
+                }
                 player.play()
                 isPlaying = true
                 scheduleAutoHide()
                 addPeriodicTimeObserver()
             case .failed:
-                print("❌ Video failed to load: \(error?.localizedDescription ?? "Unknown error")")
+                print("Video failed to load: \(error?.localizedDescription ?? "Unknown error")")
             case .cancelled:
-                print("⚠️ Video load was cancelled")
+                print("Video load was cancelled")
             default:
-                print("⚠️ Unexpected status: \(status.rawValue)")
+                print("Unexpected status: \(status.rawValue)")
             }
         }
     }
@@ -279,6 +278,8 @@ struct CustomVideoPlayerView: View {
                 duration = CMTimeGetSeconds(item.duration)
             }
         }
+        // periodically save the last time
+        annotatedFile.lastPlayedTime = currentTime
     }
 
     func togglePlayPause() {
@@ -333,19 +334,35 @@ struct CustomVideoPlayerView: View {
     func addPoint(for label: String) {
         let timestamp = formatTime(currentTime)
         let annotation = VideoAnnotation(timestamp: timestamp, label: label)
-        annotations.append(annotation)
-        MetadataManager.shared.saveAnnotations(annotations, for: videoURL)
+        annotatedFile.annotations.append(annotation)
+
+        if label == "Point Home" {
+            annotatedFile.homeScore += 1
+            annotatedFile.lastHomePointIndex = annotatedFile.annotations.count - 1
+        } else if label == "Point Away" {
+            annotatedFile.awayScore += 1
+            annotatedFile.lastAwayPointIndex = annotatedFile.annotations.count - 1
+        }
+
+        MetadataManager.shared.saveAnnotatedFile(annotatedFile, for: videoURL)
         print("📍 Added annotation: \(timestamp) - \(label)")
         scheduleAutoHide()
     }
 
     func removeLastPoint(for label: String) {
-        if let lastIndex = annotations.lastIndex(where: { $0.label == label }) {
-            annotations.remove(at: lastIndex)
-            MetadataManager.shared.saveAnnotations(annotations, for: videoURL)
-            print("🗑️ Removed last \(label) annotation")
-            scheduleAutoHide()
+        if label == "Point Home", let index = annotatedFile.lastHomePointIndex, index < annotatedFile.annotations.count {
+            annotatedFile.annotations.remove(at: index)
+            annotatedFile.homeScore = max(annotatedFile.homeScore - 1, 0)
+            annotatedFile.lastHomePointIndex = annotatedFile.annotations.lastIndex(where: { $0.label == "Point Home" })
+        } else if label == "Point Away", let index = annotatedFile.lastAwayPointIndex, index < annotatedFile.annotations.count {
+            annotatedFile.annotations.remove(at: index)
+            annotatedFile.awayScore = max(annotatedFile.awayScore - 1, 0)
+            annotatedFile.lastAwayPointIndex = annotatedFile.annotations.lastIndex(where: { $0.label == "Point Away" })
         }
+
+        MetadataManager.shared.saveAnnotatedFile(annotatedFile, for: videoURL)
+        print("🗑️ Removed last \(label) annotation")
+        scheduleAutoHide()
     }
 
 }

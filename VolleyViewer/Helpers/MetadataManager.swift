@@ -1,9 +1,16 @@
+// MetadataManager.swift 
 import Foundation
 
 struct AnnotatedFile: Codable {
     var displayName: String
     var annotations: [VideoAnnotation]
+    var homeScore: Int
+    var awayScore: Int
+    var lastHomePointIndex: Int?
+    var lastAwayPointIndex: Int?
+    var lastPlayedTime: Double?
 }
+
 
 struct VideoAnnotation: Identifiable, Codable {
     var id = UUID()
@@ -18,34 +25,41 @@ class MetadataManager {
 
     func metadataFileURL(for videoURL: URL) -> URL {
         let timestampFormatter = DateFormatter()
-        timestampFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        timestampFormatter.dateFormat = "yyyy-MM-dd_HH:mm"
         let creationDate = (try? videoURL.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
         let timestamp = timestampFormatter.string(from: creationDate)
         return directory.appendingPathComponent("meta_\(timestamp).json")
     }
 
-    func loadAnnotations(for videoURL: URL) -> [VideoAnnotation] {
+    func loadAnnotatedFile(for videoURL: URL) -> AnnotatedFile? {
         let fileURL = metadataFileURL(for: videoURL)
         guard let data = try? Data(contentsOf: fileURL),
               let container = try? JSONDecoder().decode(AnnotatedFile.self, from: data) else {
-            return []
+            return nil
         }
-        return container.annotations
+        return container
     }
 
-    func saveAnnotations(_ annotations: [VideoAnnotation], for videoURL: URL) {
+    func saveAnnotatedFile(_ file: AnnotatedFile, for videoURL: URL) {
         let fileURL = metadataFileURL(for: videoURL)
-        let baseName = fileURL.deletingPathExtension().lastPathComponent
-        let displayName = baseName
-            .replacingOccurrences(of: "meta_", with: "")
-            .components(separatedBy: "__").last ?? baseName
-        let container = AnnotatedFile(displayName: displayName, annotations: annotations)
 
-        if let data = try? JSONEncoder().encode(container) {
-            try? data.write(to: fileURL)
+        var fileToSave = file
+        if fileToSave.displayName.isEmpty {
+            // Set display name to match timestamp if missing
+            let timestampFormatter = DateFormatter()
+            timestampFormatter.dateFormat = "yyyyMMdd_HHmmss"
+            let creationDate = (try? videoURL.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+            fileToSave.displayName = timestampFormatter.string(from: creationDate)
+        }
+
+        do {
+            let data = try JSONEncoder().encode(fileToSave)
+            try data.write(to: fileURL)
+            print("Saved annotated file to \(fileURL.lastPathComponent)")
+        } catch {
+            print("Failed to save annotated file: \(error.localizedDescription)")
         }
     }
-
     func listAnnotationFiles() -> [URL] {
         guard let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return [] }
         return files.filter { $0.lastPathComponent.hasPrefix("meta_") && $0.pathExtension == "json" }
